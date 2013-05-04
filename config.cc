@@ -122,6 +122,7 @@ Preferences::Preferences():
   useWindowsPlaySound( false ),
 #endif
   useBassLibrary( false ),
+  useFfmpeg( false ),
   checkForNewReleases( true ),
   disallowContentFromOtherSites( false ),
   enableWebPlugins( false ),
@@ -693,6 +694,9 @@ Class load() throw( exError )
 
     if ( !preferences.namedItem( "useBassLibrary" ).isNull() )
       c.preferences.useBassLibrary = ( preferences.namedItem( "useBassLibrary" ).toElement().text() == "1" );
+
+    if ( !preferences.namedItem( "useFfmpeg" ).isNull() )
+      c.preferences.useFfmpeg = ( preferences.namedItem( "useFfmpeg" ).toElement().text() == "1" );
 
     if ( !preferences.namedItem( "audioPlaybackProgram" ).isNull() )
       c.preferences.audioPlaybackProgram = preferences.namedItem( "audioPlaybackProgram" ).toElement().text();
@@ -1376,6 +1380,10 @@ void save( Class const & c ) throw( exError )
 
     opt = dd.createElement( "useBassLibrary" );
     opt.appendChild( dd.createTextNode( c.preferences.useBassLibrary ? "1" : "0" ) );
+    preferences.appendChild( opt );
+
+    opt = dd.createElement( "useFfmpeg" );
+    opt.appendChild( dd.createTextNode( c.preferences.useFfmpeg ? "1" : "0" ) );
     preferences.appendChild( opt );
 
     opt = dd.createElement( "audioPlaybackProgram" );

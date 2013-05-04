@@ -265,6 +265,9 @@ private slots:
   /// Handles the double-click from the definition.
   void doubleClicked();
 
+  /// Handles audio player error message
+  void audioPlayerError( QString const & message );
+
 private:
 
   /// Deduces group from the url. If there doesn't seem to be any group,

@@ -191,6 +191,7 @@ struct Preferences
   bool useExternalPlayer;
   bool useWindowsPlaySound;
   bool useBassLibrary;
+  bool useFfmpeg;
 
   ProxyServer proxyServer;
 

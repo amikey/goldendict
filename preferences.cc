@@ -156,7 +156,6 @@ Preferences::Preferences( QWidget * parent, Config::Preferences const & p ):
 #endif
 
   // Sound
-
 #ifdef Q_WS_WIN
   // Since there's only one Phonon backend under Windows, be more precise
   ui.playViaPhonon->setText( tr( "Play via DirectShow" ) );
@@ -177,7 +176,10 @@ Preferences::Preferences( QWidget * parent, Config::Preferences const & p ):
     ui.useWindowsPlaySound->setChecked( true );
   else if( p.useBassLibrary && !p.useExternalPlayer && BassAudioPlayer::instance().canBeUsed() )
     ui.playViaBass->setChecked( true );
+  else
 #endif
+  if ( p.useFfmpeg && !p.useExternalPlayer )
+    ui.playViaFfmpeg->setChecked( true );
 
   ui.audioPlaybackProgram->setText( p.audioPlaybackProgram );
 
@@ -272,6 +274,7 @@ Config::Preferences Preferences::getPreferences()
   p.useWindowsPlaySound = ui.useWindowsPlaySound->isChecked();
   p.useBassLibrary = ui.playViaBass->isChecked();
 #endif
+  p.useFfmpeg = ui.playViaFfmpeg->isChecked();
   p.audioPlaybackProgram = ui.audioPlaybackProgram->text();
 
   p.proxyServer.enabled = ui.useProxyServer->isChecked();

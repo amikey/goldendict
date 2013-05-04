@@ -47,7 +47,11 @@ win32 {
     LIBS += -lvorbisfile \
         -lvorbis \
         -logg \
-        -lhunspell-1.3.2
+        -lhunspell-1.3.2 \
+        -lao \
+        -lavutil-gd \
+        -lavformat-gd \
+        -lavcodec-gd
     RC_FILE = goldendict.rc
     INCLUDEPATH += winlibs/include
     LIBS += -L$${PWD}/winlibs/lib
@@ -69,8 +73,12 @@ unix:!mac {
     CONFIG += link_pkgconfig
     PKGCONFIG += vorbisfile \
     	vorbis \
-	ogg \
-	hunspell
+        ogg \
+        hunspell \
+        ao \
+        libavutil \
+        libavformat \
+        libavcodec
     arm {
         LIBS += -liconv
     } else {
@@ -222,7 +230,8 @@ HEADERS += folding.hh \
     wordlist.hh \
     mdictparser.hh \
     mdx.hh \
-    voiceengines.hh
+    voiceengines.hh \
+    ffmpegaudio.hh
 
 FORMS += groups.ui \
     dictgroupwidget.ui \
@@ -328,7 +337,8 @@ SOURCES += folding.cc \
     wordlist.cc \
     mdictparser.cc \
     mdx.cc \
-    voiceengines.cc
+    voiceengines.cc \
+    ffmpegaudio.cc
 
 win32 {
 	FORMS   += texttospeechsource.ui

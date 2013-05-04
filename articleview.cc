@@ -17,6 +17,7 @@
 #include "webmultimediadownload.hh"
 #include "programs.hh"
 #include "dprintf.hh"
+#include "ffmpegaudio.hh"
 #include <QDebug>
 #include <QWebElement>
 #include <QCryptographicHash>
@@ -1626,7 +1627,13 @@ void ArticleView::resourceDownloadFinished()
           }
           else
 #endif
-          if ( !cfg.preferences.useExternalPlayer )
+          if ( !cfg.preferences.useExternalPlayer && cfg.preferences.useFfmpeg )
+          {
+            Ffmpeg::AudioPlayer & player = Ffmpeg::AudioPlayer::instance();
+            connect( &player, SIGNAL( error( QString ) ), this, SLOT( audioPlayerError( QString ) ), Qt::UniqueConnection );
+            player.playMemory( data.data(), data.size() );
+          }
+          else if ( !cfg.preferences.useExternalPlayer )
           {
             // Play via Phonon
 
@@ -1710,6 +1717,12 @@ void ArticleView::resourceDownloadFinished()
           tr( "WARNING: %1" ).arg( tr( "The referenced resource failed to download." ) ),
           10000, QPixmap( ":/icons/error.png" ) );
   }
+}
+
+void ArticleView::audioPlayerError( QString const & message )
+{
+  emit statusBarMessage( tr( "WARNING: FFmpeg Audio Player: %1" ).arg( message ),
+                         10000, QPixmap( ":/icons/error.png" ) );
 }
 
 void ArticleView::pasteTriggered()
