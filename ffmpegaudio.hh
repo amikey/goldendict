@@ -1,29 +1,12 @@
 #ifndef __FFMPEGAUDIO_HH_INCLUDED__
 #define __FFMPEGAUDIO_HH_INCLUDED__
 
-#ifndef INT64_C
-#define INT64_C(c) (c ## LL)
-#endif
-
-#ifndef UINT64_C
-#define UINT64_C(c) (c ## ULL)
-#endif
-
-#include <ao/ao.h>
-
-extern "C" {
-#include <libavcodec/avcodec.h>
-#include <libavformat/avformat.h>
-#include <libavutil/avutil.h>
-}
-
 #include <QObject>
-#include <QString>
+#include <QMutex>
 #include <QAtomicInt>
 #include <QByteArray>
-#include <QDataStream>
+#include <QSharedPointer>
 #include <QThread>
-#include <QMutex>
 
 namespace Ffmpeg
 {
@@ -37,7 +20,7 @@ public:
   void playMemory( const void * ptr, int size );
 
 signals:
-  void cancelPlaying();
+  void cancelPlaying( bool waitUntilFinished );
   void error( QString const & message );
 
 private:
@@ -51,42 +34,20 @@ class DecoderThread: public QThread
 {
   Q_OBJECT
 
-  enum
-  {
-    kBufferSize = 32768
-  };
-
   static QMutex deviceMutex_;
   QAtomicInt isCancelled_;
   QByteArray audioData_;
-  QDataStream audioDataStream_;
-  AVFormatContext * formatContext_;
-  AVCodecContext * codecContext_;
-  AVIOContext * avioContext_;
-  AVStream * audioStream_;
-  ao_device * aoDevice_;
-  bool avformatOpened_;
-  bool deviceLockAcquired_;
 
 public:
-  DecoderThread( QByteArray const & data );
-  ~DecoderThread();
-
-  virtual void run();
+  DecoderThread( QByteArray const & audioData, QObject * parent );
+  virtual ~DecoderThread();
 
 public slots:
-  void cancel();
+  void run();
+  void cancel( bool waitUntilFinished );
 
 signals:
   void error( QString const & message );
-
-private:
-  bool open( QString & errorString );
-  bool openOutputDevice( QString & errorString );
-  void closeOutputDevice();
-  bool play( QString & errorString );
-  bool normalizeAudio( AVFrame * frame, QByteArray & samples );
-  void playFrame( AVFrame * frame );
 };
 
 }

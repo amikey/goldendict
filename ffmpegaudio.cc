@@ -3,8 +3,28 @@
 #include <math.h>
 #include <limits.h>
 
-#include <QMutexLocker>
-#include <QDebug>
+#ifndef INT64_C
+#define INT64_C(c) (c ## LL)
+#endif
+
+#ifndef UINT64_C
+#define UINT64_C(c) (c ## ULL)
+#endif
+
+#include <ao/ao.h>
+
+extern "C" {
+#include <libavcodec/avcodec.h>
+#include <libavformat/avformat.h>
+#include <libavutil/avutil.h>
+}
+
+#include <QString>
+#include <QDataStream>
+
+#include <vector>
+
+using std::vector;
 
 namespace Ffmpeg
 {
@@ -32,19 +52,70 @@ AudioPlayer::AudioPlayer()
 
 AudioPlayer::~AudioPlayer()
 {
-  emit cancelPlaying();
+  emit cancelPlaying( true );
   ao_shutdown();
 }
 
 void AudioPlayer::playMemory( const void * ptr, int size )
 {
-  emit cancelPlaying();
-  QByteArray data( ( char * )ptr, size );
-  DecoderThread * decoderThread = new DecoderThread( data );
-  connect( this, SIGNAL( cancelPlaying() ), decoderThread, SLOT( cancel() ), Qt::DirectConnection );
-  connect( decoderThread, SIGNAL( error( QString ) ), this, SIGNAL( error( QString ) ) );
-  connect( decoderThread, SIGNAL( finished() ), decoderThread, SLOT( deleteLater() ) );
-  decoderThread->start();
+  emit cancelPlaying( false );
+  QByteArray audioData( ( char * )ptr, size );
+  DecoderThread * thread = new DecoderThread( audioData, this );
+
+  connect( thread, SIGNAL( error( QString ) ), this, SIGNAL( error( QString ) ) );
+  connect( this, SIGNAL( cancelPlaying( bool ) ), thread, SLOT( cancel( bool ) ), Qt::DirectConnection );
+  connect( thread, SIGNAL( finished() ), thread, SLOT( deleteLater() ) );
+
+  thread->start();
+}
+
+struct DecoderContext
+{
+  enum
+  {
+    kBufferSize = 32768
+  };
+
+  static QMutex deviceMutex_;
+  QAtomicInt & isCancelled_;
+  QByteArray audioData_;
+  QDataStream audioDataStream_;
+  AVFormatContext * formatContext_;
+  AVCodecContext * codecContext_;
+  AVIOContext * avioContext_;
+  AVStream * audioStream_;
+  ao_device * aoDevice_;
+  bool avformatOpened_;
+
+  DecoderContext( QByteArray const & audioData, QAtomicInt & isCancelled );
+  ~DecoderContext();
+
+  bool openCodec( QString & errorString );
+  void closeCodec();
+  bool openOutputDevice( QString & errorString );
+  void closeOutputDevice();
+  bool play( QString & errorString );
+  bool normalizeAudio( AVFrame * frame, vector<char> & samples );
+  void playFrame( AVFrame * frame );
+};
+
+DecoderContext::DecoderContext( QByteArray const & audioData, QAtomicInt & isCancelled ):
+  isCancelled_( isCancelled ),
+  audioData_( audioData ),
+  audioDataStream_( audioData_ ),
+  formatContext_( NULL ),
+  codecContext_( NULL ),
+  avioContext_( NULL ),
+  audioStream_( NULL ),
+  aoDevice_( NULL ),
+  avformatOpened_( false )
+{
+}
+
+DecoderContext::~DecoderContext()
+{
+  closeOutputDevice();
+  closeCodec();
 }
 
 static int readAudioData( void * opaque, unsigned char * buffer, int bufferSize )
@@ -53,22 +124,30 @@ static int readAudioData( void * opaque, unsigned char * buffer, int bufferSize 
   return pStream->readRawData( ( char * )buffer, bufferSize );
 }
 
-DecoderThread::DecoderThread( QByteArray const & data ):
-  isCancelled_( 0 ),
-  audioData_( data ),
-  audioDataStream_( audioData_ ),
-  formatContext_( NULL ),
-  codecContext_( NULL ),
-  avioContext_( NULL ),
-  audioStream_( NULL ),
-  aoDevice_( NULL ),
-  avformatOpened_( false ),
-  deviceLockAcquired_( false )
+bool DecoderContext::openCodec( QString & errorString )
 {
   formatContext_ = avformat_alloc_context();
-  // Don't free buffer allocated here, it will be cleaned up automatically.
-  avioContext_ = avio_alloc_context( ( unsigned char * )av_malloc( kBufferSize + FF_INPUT_BUFFER_PADDING_SIZE ),
-                                     kBufferSize, 0, &audioDataStream_, readAudioData, NULL, NULL );
+  if ( !formatContext_ )
+  {
+    errorString = "avformat_alloc_context() failed.";
+    return false;
+  }
+
+  unsigned char * avioBuffer = ( unsigned char * )av_malloc( kBufferSize + FF_INPUT_BUFFER_PADDING_SIZE );
+  if ( !avioBuffer )
+  {
+    errorString = "av_malloc() failed.";
+    return false;
+  }
+
+  // Don't free buffer allocated here (if succeeded), it will be cleaned up automatically.
+  avioContext_ = avio_alloc_context( avioBuffer, kBufferSize, 0, &audioDataStream_, readAudioData, NULL, NULL );
+  if ( !avioContext_ )
+  {
+    av_free( avioBuffer );
+    errorString = "avio_alloc_context() failed.";
+    return false;
+  }
 
   avioContext_->seekable = 0;
   avioContext_->write_flag = 0;
@@ -76,70 +155,7 @@ DecoderThread::DecoderThread( QByteArray const & data ):
   // If pb not set, avformat_open_input() simply crash.
   formatContext_->pb = avioContext_;
   formatContext_->flags |= AVFMT_FLAG_CUSTOM_IO;
-}
 
-DecoderThread::~DecoderThread()
-{
-  isCancelled_.ref();
-
-  if ( !formatContext_ )
-  {
-    av_free( avioContext_->buffer );
-    return;
-  }
-
-  // avformat_open_input() is not called, just free the buffer associated with
-  // the AVIOContext, and the AVFormatContext
-  if ( !avformatOpened_ )
-  {
-    avformat_free_context( formatContext_ );
-    av_free( avioContext_->buffer );
-    return;
-  }
-
-  // Closing a codec context without prior avcodec_open2() will result in
-  // a crash in ffmpeg
-  if ( audioStream_ && audioStream_->codec && audioStream_->codec->codec )
-  {
-    audioStream_->discard = AVDISCARD_ALL;
-    avcodec_close( audioStream_->codec );
-  }
-
-  avformat_close_input( &formatContext_ );
-  av_free( avioContext_->buffer );
-}
-
-void DecoderThread::run()
-{
-  QString errorString;
-
-  if ( !open( errorString ) )
-  {
-    emit error( errorString );
-    return;
-  }
-
-  if ( !openOutputDevice( errorString ) )
-  {
-    emit error( errorString );
-    return;
-  }
-
-  QMutexLocker _( &deviceMutex_ );
-
-  if ( !play( errorString ) )
-    emit error( errorString );
-
-  closeOutputDevice();
-}
-
-void DecoderThread::cancel()
-{
-  isCancelled_.ref();
-}
-
-bool DecoderThread::open( QString & errorString )
-{
   int ret = 0;
   avformatOpened_ = true;
 
@@ -187,10 +203,56 @@ bool DecoderThread::open( QString & errorString )
     return false;
   }
 
+  av_log( NULL, AV_LOG_INFO, "Codec open: %s: channels: %d, rate: %d, format: %s\n", codec->long_name,
+          codecContext_->channels, codecContext_->sample_rate, av_get_sample_fmt_name( codecContext_->sample_fmt ) );
   return true;
 }
 
-bool DecoderThread::openOutputDevice( QString & errorString )
+void DecoderContext::closeCodec()
+{
+  if ( !formatContext_ )
+  {
+    if ( avioContext_ )
+    {
+      av_free( avioContext_->buffer );
+      avioContext_ = NULL;
+    }
+    return;
+  }
+
+  // avformat_open_input() is not called, just free the buffer associated with
+  // the AVIOContext, and the AVFormatContext
+  if ( !avformatOpened_ )
+  {
+    if ( formatContext_ )
+    {
+      avformat_free_context( formatContext_ );
+      formatContext_ = NULL;
+    }
+
+    if ( avioContext_ )
+    {
+      av_free( avioContext_->buffer );
+      avioContext_ = NULL;
+    }
+    return;
+  }
+
+  avformatOpened_ = false;
+
+  // Closing a codec context without prior avcodec_open2() will result in
+  // a crash in ffmpeg
+  if ( audioStream_ && audioStream_->codec && audioStream_->codec->codec )
+  {
+    audioStream_->discard = AVDISCARD_ALL;
+    avcodec_close( audioStream_->codec );
+  }
+
+  avformat_close_input( &formatContext_ );
+  av_free( avioContext_->buffer );
+}
+
+bool DecoderContext::openOutputDevice( QString & errorString )
 {
   // Prepare for audio output
   int aoDriverId = ao_default_driver_id();
@@ -220,17 +282,28 @@ bool DecoderThread::openOutputDevice( QString & errorString )
     return false;
   }
 
+  ao_info * aoDriverInfo = ao_driver_info( aoDriverId );
+  if ( aoDriverInfo )
+  {
+
+    av_log( NULL, AV_LOG_INFO, "ao_open_live(): %s: channels: %d, rate: %d, bits: %d\n", aoDriverInfo->name,
+            aoSampleFormat.channels, aoSampleFormat.rate, aoSampleFormat.bits );
+  }
+
   return true;
 }
 
-void DecoderThread::closeOutputDevice()
+void DecoderContext::closeOutputDevice()
 {
   // ao_close() is synchronous, it will wait until all audio streams flushed
   if ( aoDevice_ )
+  {
     ao_close( aoDevice_ );
+    aoDevice_ = NULL;
+  }
 }
 
-bool DecoderThread::play( QString & errorString )
+bool DecoderContext::play( QString & errorString )
 {
   AVFrame * frame = avcodec_alloc_frame();
   if ( !frame )
@@ -281,13 +354,13 @@ bool DecoderThread::play( QString & errorString )
 static inline int32_t toInt32( double v )
 {
   if ( v >= 1.0 )
-    return LONG_MAX;
+    return 0x7fffffffL;
   else if ( v <= -1.0 )
-    return LONG_MIN;
+    return 0x80000000L;
   return floor( v * 2147483648.0 );
 }
 
-bool DecoderThread::normalizeAudio( AVFrame * frame, QByteArray & samples )
+bool DecoderContext::normalizeAudio( AVFrame * frame, vector<char> & samples )
 {
   int lineSize = 0;
   int dataSize = av_samples_get_buffer_size( &lineSize, codecContext_->channels,
@@ -302,14 +375,14 @@ bool DecoderThread::normalizeAudio( AVFrame * frame, QByteArray & samples )
     case AV_SAMPLE_FMT_S32:
     {
       samples.resize( dataSize );
-      memcpy( samples.data(), frame->extended_data[0], lineSize );
+      memcpy( &samples.front(), frame->extended_data[0], lineSize );
     }
     break;
     case AV_SAMPLE_FMT_FLT:
     {
       samples.resize( dataSize );
 
-      int32_t * out = ( int32_t * )samples.data();
+      int32_t * out = ( int32_t * )&samples.front();
       for ( int i = 0; i < dataSize; i += sizeof( float ) )
       {
         *out++ = toInt32( *( float * )frame->extended_data[i] );
@@ -320,7 +393,7 @@ bool DecoderThread::normalizeAudio( AVFrame * frame, QByteArray & samples )
     {
       samples.resize( dataSize / 2 );
 
-      int32_t * out = ( int32_t * )samples.data();
+      int32_t * out = ( int32_t * )&samples.front();
       for ( int i = 0; i < dataSize; i += sizeof( double ) )
       {
         *out++ = toInt32( *( double * )frame->extended_data[i] );
@@ -332,7 +405,7 @@ bool DecoderThread::normalizeAudio( AVFrame * frame, QByteArray & samples )
     {
       samples.resize( dataSize );
 
-      uint8_t * out = ( uint8_t * )samples.data();
+      uint8_t * out = ( uint8_t * )&samples.front();
       for ( int i = 0; i < frame->nb_samples; i++ )
       {
         for ( int ch = 0; ch < codecContext_->channels; ch++ )
@@ -346,7 +419,7 @@ bool DecoderThread::normalizeAudio( AVFrame * frame, QByteArray & samples )
     {
       samples.resize( dataSize );
 
-      int16_t * out = ( int16_t * )samples.data();
+      int16_t * out = ( int16_t * )&samples.front();
       for ( int i = 0; i < frame->nb_samples; i++ )
       {
         for ( int ch = 0; ch < codecContext_->channels; ch++ )
@@ -360,7 +433,7 @@ bool DecoderThread::normalizeAudio( AVFrame * frame, QByteArray & samples )
     {
       samples.resize( dataSize );
 
-      int32_t * out = ( int32_t * )samples.data();
+      int32_t * out = ( int32_t * )&samples.front();
       for ( int i = 0; i < frame->nb_samples; i++ )
       {
         for ( int ch = 0; ch < codecContext_->channels; ch++ )
@@ -375,7 +448,7 @@ bool DecoderThread::normalizeAudio( AVFrame * frame, QByteArray & samples )
       samples.resize( dataSize );
 
       float ** data = ( float ** )frame->extended_data;
-      int32_t * out = ( int32_t * )samples.data();
+      int32_t * out = ( int32_t * )&samples.front();
       for ( int i = 0; i < frame->nb_samples; i++ )
       {
         for ( int ch = 0; ch < codecContext_->channels; ch++ )
@@ -390,7 +463,7 @@ bool DecoderThread::normalizeAudio( AVFrame * frame, QByteArray & samples )
       samples.resize( dataSize / 2 );
 
       double ** data = ( double ** )frame->extended_data;
-      int32_t * out = ( int32_t * )samples.data();
+      int32_t * out = ( int32_t * )&samples.front();
       for ( int i = 0; i < frame->nb_samples; i++ )
       {
         for ( int ch = 0; ch < codecContext_->channels; ch++ )
@@ -407,14 +480,58 @@ bool DecoderThread::normalizeAudio( AVFrame * frame, QByteArray & samples )
   return true;
 }
 
-void DecoderThread::playFrame( AVFrame * frame )
+void DecoderContext::playFrame( AVFrame * frame )
 {
   if ( !frame )
     return;
 
-  QByteArray samples;
+  vector<char> samples;
   if ( normalizeAudio( frame, samples ) )
-    ao_play( aoDevice_, samples.data(), samples.size() );
+    ao_play( aoDevice_, &samples.front(), samples.size() );
+}
+
+DecoderThread::DecoderThread( QByteArray const & audioData, QObject * parent ) :
+  QThread( parent ),
+  isCancelled_( 0 ),
+  audioData_( audioData )
+{
+}
+
+DecoderThread::~DecoderThread()
+{
+  isCancelled_.ref();
+}
+
+void DecoderThread::run()
+{
+  QString errorString;
+  DecoderContext d( audioData_, isCancelled_ );
+
+  if ( !d.openCodec( errorString ) )
+  {
+    emit error( errorString );
+    return;
+  }
+
+  while ( !deviceMutex_.tryLock( 100 ) )
+  {
+    if ( isCancelled_ )
+      return;
+  }
+
+  if ( !d.openOutputDevice( errorString ) )
+    emit error( errorString );
+  else if ( !d.play( errorString ) )
+    emit error( errorString );
+
+  deviceMutex_.unlock();
+}
+
+void DecoderThread::cancel( bool waitUntilFinished )
+{
+  isCancelled_.ref();
+  if ( waitUntilFinished )
+    this->wait();
 }
 
 }
