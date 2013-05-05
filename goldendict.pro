@@ -22,7 +22,6 @@ INCLUDEPATH += .
 QT += webkit
 QT += xml
 QT += network
-QT += phonon
 CONFIG += exceptions \
     rtti \
     stl
@@ -346,7 +345,6 @@ win32 {
                wordbyauto.cc \
                guids.c \
                x64.cc \
-               bass.cc \
                speechclient_win.cc \
                texttospeechsource.cc \
                speechhlp.cc
@@ -354,7 +352,6 @@ win32 {
                wordbyauto.hh \
                uiauto.hh \
                x64.hh \
-               bass.hh \
                texttospeechsource.hh \
                sapi.hh \
                sphelper.hh \
