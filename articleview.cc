@@ -164,15 +164,6 @@ void ArticleView::setGroupComboBox( GroupComboBox const * g )
 ArticleView::~ArticleView()
 {
   cleanupTemp();
-
-#ifdef Q_OS_WIN32
-  if ( winWavData.size() )
-  {
-    // If we were playing some sound some time ago, make sure it stopped
-    // playing before freeing the waveform memory.
-    PlaySoundA( 0, 0, 0 );
-  }
-#endif
 }
 
 void ArticleView::showDefinition( QString const & word, unsigned group,
